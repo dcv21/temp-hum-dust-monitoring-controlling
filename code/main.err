@@ -1,0 +1,5 @@
+Compiling D:\1Grind\nam3\hk2\dan\test\pic\code\main on 19-Thg4-23 at 00:59
+>>> Warning 203 "D:\1Grind\nam3\hk2\dan\test\pic\code\main.c" Line 267(1,1): Condition always TRUE
+      Memory usage:   ROM=46%      RAM=36% - 55%
+      0 Errors,  1 Warnings.
+Build Successful.

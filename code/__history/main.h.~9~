@@ -1,0 +1,12 @@
+#include <16F887.h>
+#device ADC=10
+
+#FUSES NOBROWNOUT               //No brownout reset
+#FUSES NOWRT                    //Program memory not write protected
+#FUSES INTRC_IO
+
+#use delay(clock=8000000)
+#use rs232(baud=9600,parity=N,xmit=PIN_C6,rcv=PIN_C7,bits=8,stream=PORT1,errors)
+
+#bit T0IF = 0x0B.2
+

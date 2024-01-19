@@ -1,0 +1,359 @@
+#include <main.h>
+
+#include <string.h>
+
+#define DHTPIN PIN_D0
+#define DUST_LED_PIN PIN_A2
+#define WIFI_LED_PIN PIN_B0
+#define MQTT_LED_PIN PIN_B2
+
+float dust_density = 0.0;
+float humidity = 0.0;
+float temperature = 0.0;
+
+char received_msg[90] = "";
+char c;
+
+unsigned int8 t1_count = 0;
+
+void dht22_read(float *humidity, float *temperature);
+float dust_read();
+int1 wait_for_response();
+void check_wifi();
+void setup_mqtt();
+void mqtt_loop();
+
+#INT_RDA
+void RDA_isr(void) 
+{
+   c = getc();
+   strncat(received_msg, &c, 1);
+}
+
+#INT_TIMER1
+void timer1_isr(void)
+{
+   clear_interrupt(INT_TIMER1);
+   set_timer1(3036);
+   t1_count++;
+}
+
+void main()
+{
+   // Setup ADC
+   setup_adc_ports(sAN0, VSS_VDD);
+   setup_adc(ADC_CLOCK_INTERNAL);
+   
+   // Setup Timer 1
+   setup_timer_1(T1_INTERNAL|T1_DIV_BY_8);
+   
+   // Setup interrupts
+   enable_interrupts(INT_TIMER1);
+   clear_interrupt(INT_TIMER1);
+   enable_interrupts(INT_RDA);
+   enable_interrupts(GLOBAL);
+   
+   //Turn off wifi led and mqtt led
+   set_tris_b(0x00);
+   output_b(0x00);
+   
+   // Initiate DHT22
+   set_tris_d(0x00);
+   output_high(PIN_D0);
+   
+   // Set DUST_LED_PIN as OUTPUT
+   output_drive(DUST_LED_PIN);
+   
+   // Wait for ESP-01S to connect to WiFi
+   delay_ms(5000);
+   
+   // Turn off ESP-01S echo
+   printf("ATE0\r\n");
+   wait_for_response();
+   
+   // Check if ESP-01S is connected to WiFi
+   check_wifi();
+   
+   // Connect to MQTT Broker
+   setup_mqtt();
+   
+   delay_ms(1000);
+   
+   // Timer 1 delay 100ms
+   set_timer1(3036);
+
+while(TRUE)
+{
+   // Check for subscribed topics' messages
+   mqtt_loop();
+
+   // Wait for 10s
+   if (t1_count < 100) continue;
+   
+   // Clear buffer
+   received_msg = "";
+   
+   t1_count = 0;
+   
+   // Calc dust density average value
+   float tmp = 0.0;
+   
+   for (int i = 0; i < 10; i++)
+   {
+      tmp += dust_read();
+      delay_ms(40);
+   }
+   
+   tmp = tmp / 10.0;
+   
+   if (tmp > 0.0)
+      dust_density = tmp;
+   
+   // Send to MQTT Broker
+   printf("AT+MQTTPUB=0,\"sensors/dust\",\"%.3f\",1,0\r\n", dust_density);
+   wait_for_response();
+   mqtt_loop();
+   received_msg = "";
+   
+   dht22_read(&humidity, &temperature);
+   
+   printf("AT+MQTTPUB=0,\"sensors/humidity\",\"%f\",1,0\r\n", humidity);
+   wait_for_response();
+   mqtt_loop();
+   received_msg = "";
+   
+   printf("AT+MQTTPUB=0,\"sensors/temperature\",\"%f\",1,0\r\n", temperature);
+   wait_for_response();
+   mqtt_loop();
+   received_msg = "";
+}
+}
+
+void dht22_read(float *humidity, float *temperature)
+{
+  output_drive(DHTPIN);
+  
+  // Pull-down and wait 18ms
+  output_low(DHTPIN);
+  delay_ms(18);
+
+  // Pull-up and wait for response;
+  output_high(DHTPIN);
+  delay_us(30);
+
+  output_float(DHTPIN);
+
+  // Check response
+  if (input(DHTPIN) == 0)
+  {
+    delay_us(80);
+  }
+  else
+  {
+//!    printf("1st check\r\n");
+    return;
+  }
+  if (input(DHTPIN) == 1)
+  {
+    delay_us(80);
+  }
+  else
+  {
+//!    printf("2nd check\r\n");
+    return;
+  }
+
+  // Receive data
+  unsigned int16 _t = 0;
+  unsigned int16 _h = 0;
+  unsigned int8 checksum = 0;
+  for (int i = 0; i < 40; i++)
+  {
+    // Wait for bit transmission to start
+    while (input(DHTPIN) == 0) {}
+    
+    int count_us = 0; // Variable to count microseconds
+
+    // Receiving bit
+    while (input(DHTPIN) == 1)
+    {
+      count_us++;
+    }
+
+//!    printf("%d\r\n", count_us);
+
+    // Push bits into variable
+    if (i < 16)
+      _h = (_h << 1) | ((count_us < 20) ? 0 : 1);
+    else if (i < 32)
+      _t = (_t << 1) | ((count_us < 20) ? 0 : 1);
+    else
+      checksum = (checksum << 1) | ((count_us < 20) ? 0 : 1);
+  }
+
+  // Validate with check sum
+  unsigned int8 bits_sum = 0;
+  for (int i = 0; i < 4; i++)
+  {
+    unsigned int8 tmp;
+
+    if (i < 2)
+      tmp = _h >> (i * 8);
+    else
+      tmp = _t >> ((i - 2) * 8);
+
+     bits_sum += tmp;
+  }
+
+  if (bits_sum != checksum)
+  {
+//!    printf("3rd check\r\n");
+    return;
+  }
+
+//!   printf("%li", _t);
+//!   printf("%li", _h);
+
+  *humidity = (float) _h / 10.0;
+  *temperature = (float) ((_t >= 2048) ? -(_t - 2048) : _t) / 10.0;
+  
+  output_high(DHTPIN);
+}
+
+float dust_read()
+{
+  output_low(DUST_LED_PIN);                   // turn on LED
+  
+  delay_us(280); // Sampling time (GP2Y1010AU0F Datasheet page 5)
+  float measured_voltage = read_adc();             // read ADC vo_pin
+  
+//!  printf("%f\r\n", measured_voltage);
+
+  delay_us(40);
+  output_high(DUST_LED_PIN); // turn off LED
+
+  delay_us(9680); // GP2Y1010AU0F Datasheet page 5
+
+  float calculated_voltage = measured_voltage * (5.0 / 1023); // calc real Voltage
+  
+//!  printf("%f\r\n", calculated_voltage);
+
+  float dust_density = 0.17 * calculated_voltage - 0.1;
+
+  if (dust_density < 0)
+  {
+    dust_density = 0.00;
+  }
+
+  return dust_density;
+}
+
+int1 wait_for_response()
+{
+   char ok_res[] = "OK\r\n";
+   char error_res[] = "ERROR\r\n";
+   int1 return_code = 0;
+   
+   while (1)
+   {
+      if (c == '\n')
+      {
+         if (strstr(received_msg, ok_res) != NULL)
+         {
+            return_code = 1;
+            break;
+         }
+         else if (strstr(received_msg, error_res) != NULL)
+         {
+            break;
+         }
+      }
+   }
+   
+   delay_ms(10);
+   return return_code;
+}
+
+
+void check_wifi()
+{  
+   char expected_response[] = "CWSTATE:2";
+   
+   received_msg = "";
+   
+   printf("AT+CWSTATE?\r\n");
+   wait_for_response();
+   
+   while (strstr(received_msg, expected_response) == NULL)
+   {
+      delay_ms(5000);
+      received_msg = "";
+      printf("AT+CWSTATE?\r\n");
+      wait_for_response();
+   }
+   
+   output_high(WIFI_LED_PIN);
+}
+
+void setup_mqtt()
+{
+   received_msg = "";
+   printf("AT+MQTTCONN?\r\n");
+   wait_for_response();
+   
+   char expected_response[] = "+MQTTCONN:0,6";
+   
+   if (strstr(received_msg, expected_response) != NULL) return;
+
+   received_msg = "";
+   printf("AT+MQTTUSERCFG=0,1,\"esp8266-01s\",\"dan\",\"123\",0,0,\"\"\r\n");
+   wait_for_response();
+   
+   received_msg = "";
+   printf("AT+MQTTCONN=0,\"18.136.107.88\",1883,1\r\n");
+   
+   while (wait_for_response() == 0)
+   {
+      delay_ms(5000);
+      received_msg = "";
+      printf("AT+MQTTSUB=0,\"actuators/fan\",0\r\n");
+      wait_for_response();
+   }
+   
+   received_msg = "";
+   printf("AT+MQTTSUB=0,\"actuators/fan\",0\r\n");
+   wait_for_response();
+   
+   output_high(MQTT_LED_PIN);
+}
+
+void mqtt_loop()
+{
+   char expected_response[] = "MQTTDISCONNECTED";
+   if (strstr(received_msg, expected_response) != NULL)
+   {
+      
+   }
+
+   expected_response = "MQTTSUBRECV";
+   char *substr = strstr(received_msg, expected_response);
+   
+   if (substr != NULL)
+   {
+      delay_ms(100);
+      if (substr[33] == '1')
+      {
+         output_high(PIN_D2);
+         printf("AT+MQTTPUB=0,\"status/fan\",\"run\",1,0\r\n");
+      }
+      else
+      {
+         output_low(PIN_D2);
+         printf("AT+MQTTPUB=0,\"status/fan\",\"stop\",1,0\r\n");
+      }
+      
+      wait_for_response();
+      
+      received_msg = "";
+   }
+}
