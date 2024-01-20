@@ -7,7 +7,7 @@ This system includes:
 - [Node-RED server](/node-red)
 
 ## Screenshots:
-![board](/assets/23041406.jpg)
-![app-1](/assets/23041401.jpg)
-![app-2](/assets/23041402.jpg)
-![app-3](/assets/23041403.jpg)
+![board](/assets/23041406.jpg | width=300)
+![app-1](/assets/23041401.jpg | width=250)
+![app-2](/assets/23041402.jpg | width=250)
+![app-3](/assets/23041403.jpg | width=250)
