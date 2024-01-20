@@ -5,3 +5,5 @@ This system includes:
 - Monitoring and controlling board using PIC microcontroller [code](/code) [schematic](/schematic)
 - [React Native app](/app)
 - [Node-RED server](/node-red)
+
+## Screenshots:
